@@ -3,7 +3,6 @@ from anndata import AnnData
 from mudata import MuData
 import numpy as np
 from scipy import sparse
-from multiprocessing import Pool, cpu_count
 import logging
 from tqdm.auto import tqdm
 
@@ -13,20 +12,33 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S')
 
 
-def compute_deviations(data: Union[AnnData, MuData], n_jobs=-1, chunk_size:int=10000) -> AnnData:
-    """Compute raw and bias-corrected deviations.
+def compute_deviations(data: Union[AnnData, MuData], threshold: float = 1.0,
+                       chunk_size: int = 10000, n_jobs=-1) -> AnnData:
+    """Compute bias-corrected deviations and deviation Z-scores.
+
+    Faithful port of chromVAR's ``computeDeviations``. The returned object holds
+    the deviation Z-scores in ``.X`` (chromVAR's ``deviationScores``) and the raw
+    bias-corrected deviations in ``.layers['deviations']`` (chromVAR's
+    ``deviations``). Per-motif QC matching chromVAR is stored in ``.var``:
+    ``fractionMatches`` and ``fractionBackgroundOverlap``.
 
     Parameters
     ----------
     data : Union[AnnData, MuData]
         AnnData object with peak counts or MuData object with 'atac' modality.
+    threshold : float, optional
+        Minimum expected fragments; cell/motif entries whose expected count is
+        below this are set to NaN (chromVAR's ``threshold``), by default 1.0.
+    chunk_size : int, optional
+        Number of cells processed per chunk, by default 10000.
     n_jobs : int, optional
-        Number of cpus used for motif matching. If set to -1, all cpus will be used. Default: -1.
+        Accepted for backwards compatibility; currently unused, by default -1.
 
     Returns
     -------
-    Anndata
-        An anndata object containing estimated deviations.
+    AnnData
+        Deviations object: ``.X`` = Z-scores, ``.layers['deviations']`` = raw
+        bias-corrected deviations.
     """
     if isinstance(data, AnnData):
         adata = data
@@ -36,33 +48,83 @@ def compute_deviations(data: Union[AnnData, MuData], n_jobs=-1, chunk_size:int=1
         raise TypeError(
             "Expected AnnData or MuData object with 'atac' modality")
     # check if the object contains bias in Anndata.varm
-    assert "bg_peaks" in adata.varm_keys(
-    ), "Cannot find background peaks in the input object, please first run get_bg_peaks!"
+    assert "bg_peaks" in adata.varm, \
+        "Cannot find background peaks in the input object, please first run get_bg_peaks!"
+
+    motif_match = adata.varm['motif_match']
+    bg_peaks = adata.varm['bg_peaks']
+    n_bg_peaks = bg_peaks.shape[1]
+    n_motifs = motif_match.shape[1]
+
     logging.info('computing expectation reads per cell and peak...')
     expectation_obs, expectation_var = compute_expectation(count=adata.X)
+
+    # Per-motif QC (cell-independent) ----------------------------------------
+    # fractionMatches: fraction of peaks annotated to each motif.
+    tf_count = np.asarray(motif_match.sum(axis=0)).reshape(-1).astype(np.float64)
+    fraction_matches = tf_count / adata.n_vars
+
+    # fractionBackgroundOverlap: how often a motif peak's background peak is also
+    # a motif peak (chromVAR compute_deviations_single, the `bg_overlap` term).
+    overlap = np.zeros(n_motifs, dtype=np.float64)
+    for i in range(n_bg_peaks):
+        bg_motif_match = motif_match[bg_peaks[:, i], :]
+        overlap += np.asarray((motif_match * bg_motif_match).sum(axis=0)).reshape(-1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        fraction_bg_overlap = overlap / (n_bg_peaks * tf_count)
+
+    # Expected fraction of reads per motif, for the threshold filter.
+    peakfrac_motif = np.asarray(expectation_var @ motif_match).reshape(-1)
+
     logging.info('computing observed + bg motif deviations...')
-    motif_match = adata.varm['motif_match']
-    obs_dev = np.zeros((adata.n_obs, motif_match.shape[1]), dtype=np.float32)
-    # compute background deviations for bias-correction
-    n_bg_peaks = adata.varm['bg_peaks'].shape[1]
-    bg_dev = np.zeros(shape=(n_bg_peaks, adata.n_obs, len(
-        adata.uns['motif_name'])), dtype=np.float32)
-    ### instead of iterating over bg peaks, iterate over X
-    for item in tqdm(adata.chunked_X(chunk_size), position=0, leave=False, ncols=80, desc="rows"):
-        X, start, end = item
-        obs_dev[start:end, :] = _compute_deviations((motif_match, X, expectation_obs[start:end], expectation_var))
-        for i in tqdm(range(n_bg_peaks), position=1, leave=False, ncols=80, desc="bg"):
-            bg_peak_idx = adata.varm['bg_peaks'][:, i]
-            bg_motif_match = adata.varm['motif_match'][bg_peak_idx, :]
-            bg_dev[i, start:end, :] = _compute_deviations((bg_motif_match, X, expectation_obs[start:end], expectation_var))
-    mean_bg_dev = np.mean(bg_dev, axis=0)
-    std_bg_dev = np.std(bg_dev, axis=0)
-    dev = (obs_dev - mean_bg_dev) / std_bg_dev
-    dev = np.nan_to_num(dev, 0)
-    dev = AnnData(dev, dtype=np.float32)
-    dev.obs_names = adata.obs_names
-    dev.var_names = adata.uns['motif_name']
-    return dev
+    dev = np.zeros((adata.n_obs, n_motifs), dtype=np.float32)
+    z = np.zeros((adata.n_obs, n_motifs), dtype=np.float32)
+
+    for X, start, end in tqdm(adata.chunked_X(chunk_size), position=0,
+                              leave=False, ncols=80, desc="cells"):
+        eo = expectation_obs[start:end]
+        obs_dev = _compute_deviations((motif_match, X, eo, expectation_var))
+
+        # Online mean / sample-variance over background iterations (ddof=1, to
+        # match chromVAR's `sd`), avoiding a full (n_bg, n_cells, n_motif) buffer.
+        bg_sum = np.zeros((end - start, n_motifs), dtype=np.float64)
+        bg_sumsq = np.zeros((end - start, n_motifs), dtype=np.float64)
+        for i in range(n_bg_peaks):
+            bg_idx = bg_peaks[:, i]
+            # chromVAR sums counts AT each motif peak's background peak: reorder
+            # the count (and expectation) columns, keep the motif annotation.
+            bg_d = _compute_deviations(
+                (motif_match, X[:, bg_idx], eo, expectation_var[:, bg_idx]))
+            bg_sum += bg_d
+            bg_sumsq += bg_d * bg_d
+
+        mean_bg = bg_sum / n_bg_peaks
+        var_bg = (bg_sumsq - n_bg_peaks * mean_bg ** 2) / (n_bg_peaks - 1)
+        np.clip(var_bg, 0.0, None, out=var_bg)
+        std_bg = np.sqrt(var_bg)
+
+        normdev = obs_dev - mean_bg
+        with np.errstate(invalid='ignore', divide='ignore'):
+            zscore = normdev / std_bg
+
+        # threshold filter: expected < threshold -> NaN
+        expected = np.asarray(eo).reshape(-1, 1) * peakfrac_motif.reshape(1, -1)
+        fail = expected < threshold
+        normdev = normdev.astype(np.float32)
+        zscore = zscore.astype(np.float32)
+        normdev[fail] = np.nan
+        zscore[fail] = np.nan
+
+        dev[start:end, :] = normdev
+        z[start:end, :] = zscore
+
+    out = AnnData(z)
+    out.layers['deviations'] = dev
+    out.obs_names = adata.obs_names
+    out.var_names = adata.uns['motif_name']
+    out.var['fractionMatches'] = fraction_matches
+    out.var['fractionBackgroundOverlap'] = fraction_bg_overlap
+    return out
 
 
 def _compute_deviations(arguments):
@@ -75,7 +137,9 @@ def _compute_deviations(arguments):
         observed = observed.todense()
     if sparse.issparse(expected):
         expected = expected.todense()
-    out = np.zeros(expected.shape, dtype=expected.dtype)
+    observed = np.asarray(observed, dtype=np.float64)
+    expected = np.asarray(expected, dtype=np.float64)
+    out = np.zeros(expected.shape, dtype=np.float64)
     np.divide(observed - expected, expected, out=out, where=expected != 0)
     return out
 

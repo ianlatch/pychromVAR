@@ -2,12 +2,30 @@ import os
 from typing import Union, Literal, get_args
 import numpy as np
 from tqdm import tqdm
+from pysam import Fastafile
 import MOODS.scan
 import MOODS.tools
 from anndata import AnnData
 from mudata import MuData
 
 _BACKGROUND = Literal["subject", "genome", "even"]
+
+
+def _bg_from_genome(genome_file: str):
+    """Compute the genome-wide A/C/G/T background frequencies from a FASTA.
+
+    Returns a 4-tuple of frequencies in MOODS alphabet order (A, C, G, T),
+    suitable as the ``bg`` argument to MOODS log-odds / threshold functions.
+    """
+    fasta = Fastafile(genome_file)
+    counts = np.zeros(4, dtype=np.float64)  # A, C, G, T
+    for ref in fasta.references:
+        seq = fasta.fetch(ref).upper()
+        counts += (seq.count("A"), seq.count("C"), seq.count("G"), seq.count("T"))
+    total = counts.sum()
+    if total == 0:
+        return MOODS.tools.flat_bg(4)
+    return tuple(counts / total)
 
 
 def match_motif(data: Union[AnnData, MuData], motifs, pseudocounts=0.0001, p_value=5e-05,
@@ -45,7 +63,7 @@ def match_motif(data: Union[AnnData, MuData], motifs, pseudocounts=0.0001, p_val
         raise TypeError(
             "Expected AnnData or MuData object with 'atac' modality")
 
-    assert "peak_seq" in adata.uns_keys(), "Cannot find sequences, please first run add_peak_seq!"
+    assert "peak_seq" in adata.uns, "Cannot find sequences, please first run add_peak_seq!"
 
     options = get_args(_BACKGROUND)
     assert background in options, f"'{background}' is not in {options}"
@@ -65,8 +83,7 @@ def match_motif(data: Union[AnnData, MuData], motifs, pseudocounts=0.0001, p_val
             seq += adata.uns['peak_seq'][i]
         _bg = MOODS.tools.bg_from_sequence_dna(seq, 0)
     elif background == "genome":
-        # TODO
-        _bg = MOODS.tools.flat_bg(4)
+        _bg = _bg_from_genome(genome_file)
     else:
         _bg = MOODS.tools.flat_bg(4)
 
