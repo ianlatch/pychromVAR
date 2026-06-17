@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from anndata import AnnData
-from scipy.stats import ttest_ind, mannwhitneyu, kruskal, f_oneway, levene
+from scipy.stats import ttest_ind, mannwhitneyu, kruskal, levene
 
 from pychromvar.differential import (
     differential_deviations,

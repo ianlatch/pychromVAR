@@ -9,3 +9,6 @@ docs/source/notebooks/.ipynb_checkpoints/*
 docs/source/notebooks/*.fa
 docs/source/notebooks/*.fa.fai
 .external_code
+.venv/
+.pytest_cache/
+*.egg-info/
