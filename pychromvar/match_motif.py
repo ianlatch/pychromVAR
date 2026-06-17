@@ -77,11 +77,8 @@ def match_motif(data: Union[AnnData, MuData], motifs, pseudocounts=0.0001, p_val
         adata.uns['motif_name'][i] = motif.matrix_id + "." + motif.name
 
     # compute background distribution
-    seq = ""
     if background == "subject":
-        for i in range(adata.n_vars):
-            seq += adata.uns['peak_seq'][i]
-        _bg = MOODS.tools.bg_from_sequence_dna(seq, 0)
+        _bg = MOODS.tools.bg_from_sequence_dna("".join(adata.uns['peak_seq']), 0)
     elif background == "genome":
         _bg = _bg_from_genome(genome_file)
     else:
@@ -107,12 +104,16 @@ def match_motif(data: Union[AnnData, MuData], motifs, pseudocounts=0.0001, p_val
     # create scanner
     scanner = MOODS.scan.Scanner(7)
     scanner.set_motifs(matrices=matrices, bg=_bg, thresholds=thresholds)
-    adata.varm['motif_match'] = np.zeros(shape=(adata.n_vars, n_motifs), dtype=np.uint8)
+    motif_match = np.zeros(shape=(adata.n_vars, n_motifs), dtype=np.uint8)
 
     for i in tqdm(range(adata.n_vars)):
         results = scanner.scan(adata.uns['peak_seq'][i])
-        for j in range(n_motifs):
-            if len(results[j]) > 0 or len(results[j+n_motifs]) > 0:
-                adata.varm['motif_match'][i, j] = 1
+        # a motif matches if it hits on the forward (j) or reverse (j+n_motifs)
+        # strand; assemble the whole row at once instead of per-element setitem.
+        motif_match[i] = [1 if (fwd or rev) else 0
+                          for fwd, rev in zip(results[:n_motifs],
+                                              results[n_motifs:])]
+
+    adata.varm['motif_match'] = motif_match
 
     return None

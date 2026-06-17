@@ -123,6 +123,49 @@ def test_compute_deviations_threshold_masks_low_expected():
     assert np.isnan(out.layers['deviations']).all()
 
 
+def test_compute_expectation_norm_and_group():
+    import scipy.sparse as sp
+    rng = np.random.default_rng(5)
+    counts = rng.integers(1, 7, size=(12, 6)).astype(np.float64)
+    depth = counts.sum(1)
+
+    # norm=True: a[peak] = sum_cell count[cell,peak] / depth[cell]
+    b, a = compute_expectation(counts, norm=True)
+    a_exp = (counts / depth.reshape(-1, 1)).sum(0)
+    assert np.allclose(a.ravel(), a_exp)
+    assert np.allclose(b.ravel(), depth)
+
+    # sparse matches dense for the norm path
+    b_s, a_s = compute_expectation(sp.csr_matrix(counts), norm=True)
+    assert np.allclose(a_s.ravel(), a_exp)
+
+    # group, no norm: mean over groups of within-group peak fraction
+    group = np.array([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1])
+    _, a_g = compute_expectation(counts, group=group)
+    g0 = counts[:6].sum(0) / counts[:6].sum()
+    g1 = counts[6:].sum(0) / counts[6:].sum()
+    assert np.allclose(a_g.ravel(), (g0 + g1) / 2)
+
+
+def test_compute_deviations_accepts_precomputed_expectation():
+    adata, counts, motif_match, bg_peaks = _build_adata()
+    exp = compute_expectation(adata.X)
+    out_default = compute_deviations(adata)
+    out_explicit = compute_deviations(adata, expectation=exp)
+    assert np.allclose(out_default.X, out_explicit.X, equal_nan=True)
+
+
+def test_compute_deviations_threaded_matches_serial():
+    # larger bg count + multiple chunks so the threaded path is exercised
+    adata, _, _, _ = _build_adata(seed=3, n_cells=50, n_motif=4, n_bg=40)
+    serial = compute_deviations(adata, n_jobs=1, chunk_size=16)
+    threaded = compute_deviations(adata, n_jobs=4, chunk_size=16)
+    # in-order accumulation keeps the threaded result bit-identical
+    assert np.allclose(serial.X, threaded.X, rtol=0, atol=0, equal_nan=True)
+    assert np.allclose(serial.layers['deviations'], threaded.layers['deviations'],
+                       rtol=0, atol=0, equal_nan=True)
+
+
 def test_internal_deviation_helper():
     count = np.array([[1, 0, 1], [0, 1, 1]])
     b, a = compute_expectation(count)

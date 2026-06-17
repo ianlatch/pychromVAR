@@ -56,18 +56,35 @@ def _sample_bg_peaks(bin_membership: np.ndarray, bin_density: np.ndarray,
     Mirrors ``src/utils.cpp::bg_sample_helper`` (lines 83-99): for every peak,
     draw ``niterations`` background peaks from the whole peak set, weighting each
     candidate by ``dnorm(dist(its bin, this peak's bin), 0, w) / density(its bin)``.
-    Returns a (n_peaks, niterations) array of 0-based peak indices.
+
+    Because every peak in a bin shares that weight, this is equivalent to (and
+    implemented as) sampling a candidate *bin* with probability proportional to
+    the bin's distance kernel, then a uniform peak within it -- reducing the draw
+    from O(n_peaks) candidates to O(n_occupied_bins). Returns a
+    (n_peaks, niterations) array of 0-based peak indices.
     """
     n = bin_membership.shape[0]
     out = np.empty((n, niterations), dtype=np.int64)
-    density = bin_density[bin_membership].astype(np.float64)
 
-    for b in np.unique(bin_membership):
-        ix = np.flatnonzero(bin_membership == b)
-        p = bin_p[bin_membership, b] / density
-        p /= p.sum()
-        sampled = rng.choice(n, size=niterations * ix.size, replace=True, p=p)
-        out[ix, :] = sampled.reshape(ix.size, niterations)
+    occ = np.flatnonzero(bin_density > 0)            # occupied bins
+    # group peaks by bin: order[starts[t]:ends[t]] are the peaks in occ[t]
+    order = np.argsort(bin_membership, kind="stable")
+    sorted_bins = bin_membership[order]
+    starts = np.searchsorted(sorted_bins, occ, side="left")
+    ends = np.searchsorted(sorted_bins, occ, side="right")
+    sizes = ends - starts
+
+    for t, b in enumerate(occ):
+        peaks_b = order[starts[t]:ends[t]]
+        cnt = peaks_b.size
+        # P(candidate bin j) proportional to kernel(j, b) over occupied bins
+        p = bin_p[occ, b]
+        p = p / p.sum()
+        total = niterations * cnt
+        chosen = rng.choice(occ.size, size=total, replace=True, p=p)
+        # uniform peak within each chosen bin
+        offs = (rng.random(total) * sizes[chosen]).astype(np.int64)
+        out[peaks_b, :] = order[starts[chosen] + offs].reshape(cnt, niterations)
 
     return out
 
