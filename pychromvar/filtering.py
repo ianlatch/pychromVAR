@@ -36,27 +36,23 @@ def filter_peaks(data: Union[AnnData, MuData], min_fragments_per_peak: int = 1,
                  ix_return: bool = False):
     """Filter peaks by fragment count and, optionally, remove overlapping peaks.
 
-    Faithful port of chromVAR's ``filterPeaks``: keeps peaks with at least
-    ``min_fragments_per_peak`` fragments, then (if ``non_overlapping``) greedily
-    removes overlapping peaks keeping the one with more fragments. Peaks must be
-    sorted by genomic position for overlap removal.
+    Port of chromVAR's ``filterPeaks``: keep peaks with >= ``min_fragments_per_peak``
+    fragments, then (if ``non_overlapping``) greedily drop overlapping peaks,
+    keeping the one with more fragments. Peaks must be position-sorted for overlap
+    removal. Returns kept indices (``ix_return``) or a filtered AnnData copy.
 
     Parameters
     ----------
     data : AnnData or MuData
-        Object with peak counts; peak names parsed as ``chrom<delim>start<delim>end``.
+        Peak counts; peak names parsed as ``chrom<delim>start<delim>end``.
     min_fragments_per_peak : int, optional
-        Minimum fragments to keep a peak, by default 1.
+        Minimum fragments to keep a peak. Default 1.
     non_overlapping : bool, optional
-        Remove overlapping peaks, by default True.
+        Remove overlapping peaks. Default True.
     delimiter : str, optional
-        Delimiter separating chrom/start/end in peak names, by default "-".
+        Chrom/start/end delimiter in peak names. Default "-".
     ix_return : bool, optional
-        Return kept peak indices instead of a filtered object, by default False.
-
-    Returns
-    -------
-    np.ndarray of kept indices, or a filtered (copied) AnnData.
+        Return kept indices instead of a filtered object. Default False.
     """
     adata = _get_adata(data)
     fragments_per_peak = get_fragments_per_peak(adata)
@@ -111,17 +107,13 @@ def filter_peaks(data: Union[AnnData, MuData], min_fragments_per_peak: int = 1,
 def filter_samples(data: Union[AnnData, MuData], min_depth: float = None,
                    min_in_peaks: float = None, depth: np.ndarray = None,
                    ix_return: bool = False):
-    """Filter cells/samples by sequencing depth and fraction of reads in peaks.
+    """Filter cells by sequencing depth and fraction of reads in peaks.
 
-    Faithful port of chromVAR's ``filterSamples``. ``depth`` (total reads per
-    cell, including outside peaks) is taken from the ``depth`` argument, then
-    ``.obs['depth']``; if neither is available it falls back to reads-in-peaks.
-    Defaults match chromVAR: ``min_in_peaks`` = 0.5 x median(in-peak fraction),
-    ``min_depth`` = max(500, 0.1 x median depth).
-
-    Returns
-    -------
-    np.ndarray of kept indices, or a filtered (copied) AnnData.
+    Port of chromVAR's ``filterSamples``. ``depth`` (total reads per cell) comes
+    from the ``depth`` arg, else ``.obs['depth']``, else reads-in-peaks. chromVAR
+    defaults: ``min_in_peaks`` = 0.5 x median in-peak fraction, ``min_depth`` =
+    max(500, 0.1 x median depth). Returns kept indices (``ix_return``) or a
+    filtered AnnData copy.
     """
     adata = _get_adata(data)
     fragments_per_sample = get_fragments_per_sample(adata)

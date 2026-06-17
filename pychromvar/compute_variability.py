@@ -49,34 +49,29 @@ def compute_variability(deviations: Union[AnnData], bootstrap_error: bool = True
                         n_jobs: int = -1) -> pd.DataFrame:
     """Compute the overall variability of each motif across cells.
 
-    Faithful port of chromVAR's ``computeVariability``. Variability is the SD of
-    a motif's deviation Z-scores across cells; the p-value tests whether that SD
-    exceeds the null expectation of 1 via a chi-square statistic.
+    Port of chromVAR's ``computeVariability``. Variability is the SD of a motif's
+    deviation Z-scores across cells; the chi-square p-value tests whether it
+    exceeds the null expectation of 1. Returns a DataFrame indexed by motif with
+    ``name``, ``variability``, ``p_value``, ``p_value_adj`` (and bootstrap bounds
+    if ``bootstrap_error``).
 
     Parameters
     ----------
     deviations : AnnData
         Output of :func:`compute_deviations`; ``.X`` holds the Z-scores.
     bootstrap_error : bool, optional
-        Compute a bootstrap confidence interval for the variability, by default True.
+        Compute a bootstrap confidence interval. Default True.
     bootstrap_samples : int, optional
-        Number of bootstrap resamples (over cells), by default 1000.
+        Number of bootstrap resamples over cells. Default 1000.
     bootstrap_quantiles : tuple, optional
-        Lower/upper quantiles for the bootstrap interval, by default (0.025, 0.975).
+        Lower/upper bootstrap quantiles. Default (0.025, 0.975).
     na_rm : bool, optional
-        Ignore NaN Z-scores when computing SDs, by default True.
+        Ignore NaN Z-scores in the SDs. Default True.
     seed : int, optional
-        Seed for the bootstrap sampler, by default None.
+        Bootstrap seed. Default None.
     n_jobs : int, optional
-        Worker threads for the bootstrap (-1 = all cores). Results are
-        independent of this value, by default -1.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Indexed by motif, with columns ``name``, ``variability``, ``p_value``,
-        ``p_value_adj`` and (if ``bootstrap_error``) ``bootstrap_lower_bound``,
-        ``bootstrap_upper_bound``.
+        Worker threads for the bootstrap (-1 = all cores); results are
+        independent of it. Default -1.
     """
     z = np.asarray(deviations.X, dtype=np.float64)
     n_cells = z.shape[0]

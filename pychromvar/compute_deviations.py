@@ -35,32 +35,22 @@ def compute_deviations(data: Union[AnnData, MuData], threshold: float = 1.0,
                        n_jobs=-1) -> AnnData:
     """Compute bias-corrected deviations and deviation Z-scores.
 
-    Faithful port of chromVAR's ``computeDeviations``. The returned object holds
-    the deviation Z-scores in ``.X`` (chromVAR's ``deviationScores``) and the raw
-    bias-corrected deviations in ``.layers['deviations']`` (chromVAR's
-    ``deviations``). Per-motif QC matching chromVAR is stored in ``.var``:
-    ``fractionMatches`` and ``fractionBackgroundOverlap``.
+    Port of chromVAR's ``computeDeviations``. Returns an AnnData with Z-scores in
+    ``.X``, raw bias-corrected deviations in ``.layers['deviations']``, and
+    per-motif QC (``fractionMatches``, ``fractionBackgroundOverlap``) in ``.var``.
 
     Parameters
     ----------
-    data : Union[AnnData, MuData]
-        AnnData object with peak counts or MuData object with 'atac' modality.
+    data : AnnData or MuData
+        Peak counts (MuData uses the 'atac' modality).
     threshold : float, optional
-        Minimum expected fragments; cell/motif entries whose expected count is
-        below this are set to NaN (chromVAR's ``threshold``), by default 1.0.
+        Entries with expected fragments below this are set to NaN. Default 1.0.
     expectation : tuple, optional
-        Precomputed ``(b, a)`` expectation pair from :func:`compute_expectation`
-        (e.g. to use ``norm``/``group`` options). Computed internally if None.
+        Precomputed ``(b, a)`` from :func:`compute_expectation`; computed if None.
     chunk_size : int, optional
-        Number of cells processed per chunk, by default 10000.
+        Cells per chunk. Default 10000.
     n_jobs : int, optional
-        Accepted for backwards compatibility; currently unused, by default -1.
-
-    Returns
-    -------
-    AnnData
-        Deviations object: ``.X`` = Z-scores, ``.layers['deviations']`` = raw
-        bias-corrected deviations.
+        Worker threads for the background loop (-1 = all cores). Default -1.
     """
     if isinstance(data, AnnData):
         adata = data
@@ -121,26 +111,29 @@ def compute_deviations(data: Union[AnnData, MuData], threshold: float = 1.0,
                 return _compute_deviations(
                     (motif_match, X[:, bg_idx], eo, expectation_var[:, bg_idx]))
 
-            # Online mean / sample-variance over background iterations (ddof=1,
-            # to match chromVAR's `sd`), avoiding a full (n_bg, n_cells, n_motif)
-            # buffer. The sparse matmul releases the GIL, so threads parallelise
-            # it; results are consumed in submission order so the output stays
+            # The sparse matmul releases the GIL, so threads parallelise it;
+            # results are consumed in submission order so the output stays
             # bit-identical to the serial path.
             if executor is None:
                 bg_iter = (_bg_dev(i) for i in range(n_bg_peaks))
             else:
                 bg_iter = _imap_bounded(executor, _bg_dev, n_bg_peaks, n_workers)
 
-            bg_sum = np.zeros((end - start, n_motifs), dtype=np.float64)
-            bg_sumsq = np.zeros((end - start, n_motifs), dtype=np.float64)
+            # Welford's online algorithm for the per-(cell, motif) mean and
+            # sample variance (ddof=1, to match chromVAR's `sd`) over background
+            # iterations. Single-pass (no (n_bg, n_cells, n_motif) buffer) and
+            # numerically stable: each M2 increment equals delta^2 (count-1)/count
+            # >= 0, so M2 never goes negative and no clipping is needed.
+            mean_bg = np.zeros((end - start, n_motifs), dtype=np.float64)
+            m2_bg = np.zeros((end - start, n_motifs), dtype=np.float64)
+            count = 0
             for bg_d in bg_iter:
-                bg_sum += bg_d
-                bg_sumsq += bg_d * bg_d
+                count += 1
+                delta = bg_d - mean_bg
+                mean_bg += delta / count
+                m2_bg += delta * (bg_d - mean_bg)
 
-            mean_bg = bg_sum / n_bg_peaks
-            var_bg = (bg_sumsq - n_bg_peaks * mean_bg ** 2) / (n_bg_peaks - 1)
-            np.clip(var_bg, 0.0, None, out=var_bg)
-            std_bg = np.sqrt(var_bg)
+            std_bg = np.sqrt(m2_bg / (count - 1))
 
             normdev = obs_dev - mean_bg
             with np.errstate(invalid='ignore', divide='ignore'):
@@ -188,32 +181,21 @@ def _compute_deviations(arguments):
 
 def compute_expectation(count: Union[np.array, sparse.csr_matrix],
                         norm: bool = False, group=None) -> np.array:
-    """
-    Compute expectation accessibility per peak and per cell by assuming
-    identical read probability per peak for each cell with a sequencing
-    depth matched to that cell observed sequencing depth.
+    """Expected accessibility per cell and peak (chromVAR's ``computeExpectations``).
 
-    The expectation is returned as a (b, a) pair where ``b`` is fragments per
-    cell and ``a`` is the per-peak expected read fraction; ``b @ a`` gives the
-    expected count matrix.
+    Returns a ``(b, a)`` pair: ``b`` = fragments per cell, ``a`` = per-peak
+    expected read fraction; ``b @ a`` reconstructs the expected count matrix.
 
     Parameters
     ----------
-    count : Union[np.array, sparse.csr_matrix]
-        Count matrix (cells x peaks) containing raw accessibility data.
+    count : ndarray or csr_matrix
+        Count matrix (cells x peaks).
     norm : bool, optional
-        Weight all cells equally: expectation is the (summed) fraction of reads
-        in each peak across cells rather than total reads per peak over total
-        reads. Not recommended for single-cell data, by default False.
+        Weight all cells equally rather than by depth. Not recommended for
+        single-cell data. Default False.
     group : optional
-        Per-cell group labels (length n_cells). When given, the expectation is
-        the mean across groups of the within-group per-peak read fraction.
-        Mirrors chromVAR's ``computeExpectations`` group option.
-
-    Returns
-    -------
-    np.array, np.array
-        Expectation pair (b, a); ``b @ a`` reconstructs the expected counts.
+        Per-cell group labels; expectation becomes the mean across groups of the
+        within-group per-peak fraction.
     """
     n_cells, n_peaks = count.shape
     b = np.asarray(count.sum(1), dtype=np.float32).reshape((n_cells, 1))

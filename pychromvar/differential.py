@@ -58,26 +58,21 @@ def differential_deviations(deviations: AnnData, groups: Union[str, Sequence],
                             parametric: bool = True) -> pd.DataFrame:
     """Test whether bias-corrected deviations differ between groups of cells.
 
-    Faithful port of chromVAR's ``differentialDeviations`` (operates on the
-    ``deviations`` assay). Two groups use a Welch t-test (parametric) or
-    Mann-Whitney/Wilcoxon test; more than two use Welch's ANOVA (parametric) or
-    the Kruskal-Wallis test.
+    Port of chromVAR's ``differentialDeviations`` (uses the ``deviations``
+    assay). Two groups: Welch t-test or Mann-Whitney; more: Welch ANOVA or
+    Kruskal-Wallis. Returns a DataFrame indexed by motif with ``p_value`` and
+    ``p_value_adjusted``.
 
     Parameters
     ----------
     deviations : AnnData
         Output of :func:`compute_deviations`.
     groups : str or sequence
-        Column name in ``.obs`` or a per-cell vector of group labels.
+        ``.obs`` column name or a per-cell vector of group labels.
     alternative : str, optional
-        Only used with two groups: 'two-sided', 'less', or 'greater'.
+        Two-group only: 'two-sided', 'less', or 'greater'.
     parametric : bool, optional
-        Use parametric tests, by default True.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Indexed by motif, with ``p_value`` and ``p_value_adjusted``.
+        Use parametric tests. Default True.
     """
     g = pd.Categorical(_resolve_groups(deviations, groups))
     codes = g.codes
@@ -116,23 +111,19 @@ def differential_variability(deviations: AnnData, groups: Union[str, Sequence],
                              parametric: bool = True) -> pd.DataFrame:
     """Test whether variability differs between groups of cells.
 
-    Faithful port of chromVAR's ``differentialVariability``: a Brown-Forsythe
-    test on the deviation Z-scores, i.e. an ANOVA (parametric) or Kruskal-Wallis
-    test (non-parametric) on the absolute deviations from each group's median.
+    Port of chromVAR's ``differentialVariability``: a Brown-Forsythe test on the
+    Z-scores (ANOVA, or Kruskal-Wallis if non-parametric, on the absolute
+    deviations from each group's median). Returns a DataFrame indexed by motif
+    with ``p_value`` and ``p_value_adjusted``.
 
     Parameters
     ----------
     deviations : AnnData
         Output of :func:`compute_deviations`; uses the Z-scores in ``.X``.
     groups : str or sequence
-        Column name in ``.obs`` or a per-cell vector of group labels.
+        ``.obs`` column name or a per-cell vector of group labels.
     parametric : bool, optional
-        Use the parametric Brown-Forsythe test, by default True.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Indexed by motif, with ``p_value`` and ``p_value_adjusted``.
+        Use the parametric Brown-Forsythe test. Default True.
     """
     g = pd.Categorical(_resolve_groups(deviations, groups))
     codes = g.codes

@@ -91,33 +91,27 @@ def _sample_bg_peaks(bin_membership: np.ndarray, bin_density: np.ndarray,
 
 def get_bg_peaks(data: Union[AnnData, MuData], niterations: int = 50,
                  w: float = 0.1, bs: int = 50, seed: int = None, n_jobs=-1):
-    """Find background peaks matched on GC bias and reads per peak.
+    """Sample background peaks matched on GC bias and reads per peak.
 
-    Faithful port of chromVAR's ``getBackgroundPeaks``: background peaks are
-    *sampled* (with replacement) based on similarity in GC content and number of
-    fragments using a Gaussian kernel over a binned, whitened feature space.
+    Port of chromVAR's ``getBackgroundPeaks``: peaks are sampled (with
+    replacement) by similarity in GC content and fragment count, via a Gaussian
+    kernel over a binned, whitened feature space. Writes ``varm['bg_peaks']``, a
+    (n_peaks, niterations) index array.
 
     Parameters
     ----------
-    data : Union[AnnData, MuData]
-        AnnData object with peak counts or MuData object with 'atac' modality
+    data : AnnData or MuData
+        Peak counts (MuData uses the 'atac' modality).
     niterations : int, optional
-        Number of background peaks to sample per peak, by default 50
+        Background peaks sampled per peak. Default 50.
     w : float, optional
-        Standard deviation of the Gaussian kernel controlling how similar
-        background peaks must be, by default 0.1
+        Gaussian kernel SD (how similar background peaks must be). Default 0.1.
     bs : int, optional
-        Number of bins along each feature axis; higher is more precise but
-        slower, by default 50
+        Bins per feature axis; higher = more precise, slower. Default 50.
     seed : int, optional
-        Seed for the random sampler, for reproducibility, by default None
+        Sampler seed for reproducibility. Default None.
     n_jobs : int, optional
-        Retained for backwards compatibility; unused, by default -1
-
-    Returns
-    -------
-    Updates `data` with ``varm['bg_peaks']``, a (n_peaks, niterations) array of
-    background peak indices.
+        Retained for backwards compatibility; unused. Default -1.
     """
 
     if isinstance(data, AnnData):
